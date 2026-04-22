@@ -147,28 +147,39 @@ class BackgroundWorker:
         return retrieved_successfully
 
 class WarehouseManager:
-    """The system controller that maintains inventory state."""
     def __init__(self):
         self.lock = threading.Lock()
         self.batches = []
         self.wms_map = WarehouseMap()
-        self.is_running = True 
+        self.is_running = True
         
         if HAS_SIMULATOR:
-            # Added this line to show status when simulator is active
-            print("\n>>> System Initialized: SIMULATION MODE (Simulator Active)")
+            print("\n>>> System Initialized: SIMULATION MODE")
             self.sim = BlockStorageSimulator()
             self.app = SimulatorApp(self.sim)
         else:
-            print("\n>>> System Initialized: LOGIC-ONLY MODE (Simulator Missing)")
+            print("\n>>> System Initialized: LOGIC-ONLY MODE")
             self.sim = None
             self.app = None
             
         self.worker = BackgroundWorker(self.sim, self.lock)
 
-
     def intake(self, qty):
-        """Logic for adding new stock."""
+        """Tier 1 Intake with 'Full Warehouse' error handling."""
+        # --- NEW: Check if there is space available ---
+        # Each slot holds 2, so total capacity is (len(slots) * 2)
+        total_capacity = len(self.wms_map.slots) * 2
+        current_stock = sum(b.current_qty for b in self.batches)
+        
+        if current_stock >= total_capacity:
+            print(f"\n[ERROR] Intake failed: Warehouse is full ({current_stock}/{total_capacity} units).")
+            return
+
+        if current_stock + qty > total_capacity:
+            available_space = total_capacity - current_stock
+            print(f"\n[Warning] Not enough space for {qty}. Adjusting intake to {available_space} units...")
+            qty = available_space
+
         new_batch = Batch(len(self.batches) + 1, qty)
         self.batches.append(new_batch)
         
@@ -188,21 +199,42 @@ class WarehouseManager:
         new_batch.initial_qty = total_stored
 
     def dispatch(self, qty):
-        """Logic for removing stock."""
-        remaining_work = qty
+        """Tier 1 Dispatch with Partial Fulfillment reporting."""
+        # 1. Check total stock on hand
+        total_available = sum(b.current_qty for b in self.batches)
+        
+        if total_available == 0:
+            print("\n[ERROR] Dispatch failed: The warehouse is currently empty!")
+            return 
+
+        # 2. Determine fulfillment status
+        requested_qty = qty
+        actual_to_remove = qty
+        missing_qty = 0
+
+        if requested_qty > total_available:
+            actual_to_remove = total_available
+            missing_qty = requested_qty - total_available
+            print(f"\n[Warning] Partial Fulfillment: Only {total_available} of {requested_qty} units available.")
+
+        # 3. Execution Loop
+        remaining_work = actual_to_remove
         total_removed = 0
         while remaining_work > 0:
             load = 2 if remaining_work >= 2 else 1
             current_count = total_removed + load
-            print(f"\n[Worker] Removing {current_count} of {qty} blocks . . .")
+            print(f"\n[Worker] Removing {current_count} of {actual_to_remove} blocks . . .")
             
             removed = self.worker.run_outgoing(load, self.wms_map)
             total_removed += removed
             remaining_work -= load
 
+        # 4. Final Reporting
         print(f"\n>>> SUCCESS: {total_removed} blocks were removed from storage.")
+        if missing_qty > 0:
+            print(f"    !!! NOTICE: Order was short by {missing_qty} units (Stock Exhausted).")
 
-        # Deduct from batch records (FIFO)
+        # 5. Deduct from batch records (FIFO Logic)
         rem_to_deduct = total_removed
         for batch in self.batches:
             if rem_to_deduct <= 0: break
@@ -210,6 +242,8 @@ class WarehouseManager:
                 take = min(batch.current_qty, rem_to_deduct)
                 batch.current_qty -= take
                 rem_to_deduct -= take
+
+
 
 class WMS_Interface:
     """Command Line Interface for user control."""
