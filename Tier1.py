@@ -1,3 +1,7 @@
+import threading
+from block_storage_simulator.simulator import BlockStorageSimulator
+from block_storage_simulator.gui import SimulatorApp
+
 class Product:
     """Represents a bulk item type in the warehouse."""
     def __init__(self, name, sku):
@@ -18,18 +22,31 @@ class Product:
         return False
 
 class WarehouseManager:
-    """Handles the business logic for stock movement."""
+    """Handles the business logic and Simulator hardware."""
     def __init__(self):
-        self.inventory = {}  # Stores SKU: Product object
+        self.inventory = {}  # SKU: Product object
+        # Initialize Hardware
+        self.sim = BlockStorageSimulator()
+        self.app = SimulatorApp(self.sim)
 
     def intake(self, sku, name, amount):
         if sku not in self.inventory:
             self.inventory[sku] = Product(name, sku)
+        
+        # Hardware Action: Add block to simulator for each unit
+        for _ in range(amount):
+            self.sim.add_block_to_home_pallet()
+            
         return self.inventory[sku].add_stock(amount)
 
     def dispatch(self, sku, amount):
         if sku in self.inventory:
-            return self.inventory[sku].remove_stock(amount)
+            # Hardware Action: Remove block from simulator for each unit
+            # Only remove if logic says we have enough stock
+            if amount <= self.inventory[sku].quantity:
+                for _ in range(amount):
+                    self.sim.remove_block_from_home_pallet()
+                return self.inventory[sku].remove_stock(amount)
         return False
 
     def get_all_items(self):
@@ -41,38 +58,39 @@ class WarehouseUI:
         self.manager = manager
 
     def display_stock(self):
-        print("\n" + "="*40)
-        print(f"{'SKU':<10} | {'Product Name':<18} | {'Stock'}")
-        print("-" * 40)
+        print("\n" + "="*45)
+        print(f"{'SKU':<10} | {'Product Name':<20} | {'Stock'}")
+        print("-" * 45)
         items = self.manager.get_all_items()
         if not items:
-            print("WAREHOUSE EMPTY")
+            print(f"{'WAREHOUSE EMPTY':^45}")
         for item in items:
-            print(f"{item.sku:<10} | {item.name:<18} | {item.quantity}")
-        print("="*40)
+            print(f"{item.sku:<10} | {item.name:<20} | {item.quantity}")
+        print("="*45)
 
-    def run(self):
+    def run_menu(self):
+        """The command loop for the terminal."""
         while True:
             self.display_stock()
-            print("\nOptions: [1] Incoming (Add)  [2] Outgoing (Remove)  [3] Exit")
+            print("\nOptions: [1] Incoming  [2] Outgoing  [3] Exit")
             choice = input("Select operation: ")
 
             if choice == '1':
                 sku = input("Enter SKU: ")
                 name = input("Enter Product Name: ")
                 try:
-                    qty = int(input("Enter quantity to add: "))
-                    self.manager.intake(sku, name, qty)
-                    print(f">> SUCCESS: Added {qty} units.")
+                    qty = int(input("Quantity to add: "))
+                    if self.manager.intake(sku, name, qty):
+                        print(f">> SUCCESS: {qty} units received.")
                 except ValueError:
                     print(">> ERROR: Quantity must be a number.")
 
             elif choice == '2':
                 sku = input("Enter SKU: ")
                 try:
-                    qty = int(input("Enter quantity to remove: "))
+                    qty = int(input("Quantity to remove: "))
                     if self.manager.dispatch(sku, qty):
-                        print(f">> SUCCESS: Dispatched {qty} units.")
+                        print(f">> SUCCESS: {qty} units dispatched.")
                     else:
                         print(">> ERROR: Insufficient stock or SKU not found.")
                 except ValueError:
@@ -80,14 +98,21 @@ class WarehouseUI:
 
             elif choice == '3':
                 print("Closing system...")
+                self.manager.app.root.destroy() # Close the GUI window
                 break
-            else:
-                print("Invalid option.")
 
 if __name__ == "__main__":
-    # Start the single-run operation
-    wm = WarehouseManager()
-    app = WarehouseUI(wm)
-    app.run()
+    # 1. Setup the Brain
+    manager = WarehouseManager()
+    
+    # 2. Setup the Voice (UI)
+    ui = WarehouseUI(manager)
+    
+    # 3. Start the UI in a background thread
+    threading.Thread(target=ui.run_menu, daemon=True).start()
+    
+    # 4. Start the Hardware GUI (This keeps the main thread alive)
+    manager.app.run()
+
 
 
