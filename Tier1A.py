@@ -89,5 +89,3 @@ if __name__ == "__main__":
     wm = WarehouseManager()
     app = WarehouseUI(wm)
     app.run()
-
-
