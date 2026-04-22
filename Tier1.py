@@ -2,7 +2,7 @@ import time
 import threading
 
 # --- 1. HARDWARE AUTO-DETECTION ---
-# This block allows the code to run even if the simulator library is missing.
+# Attempts to load simulation libraries. If they fail, 'Mock Mode' is enabled.
 try:
     from block_storage_simulator.simulator import BlockStorageSimulator
     from block_storage_simulator.gui import SimulatorApp
@@ -11,14 +11,14 @@ try:
     HAS_SIMULATOR = True
 except ImportError:
     HAS_SIMULATOR = False
-    # Define dummy constants to prevent NameErrors in Mock Mode
+    # Dummy classes to prevent logic crashes when libraries are missing
     class ConveyorState:
-        WAITING_AT_HOME = "HOME_POSITION"
-        IMAGING = "IMAGING_ZONE"
-        WAITING_IN_SLOT = "TRANSFER_ZONE"
+        WAITING_AT_HOME = "HOME"
+        IMAGING = "SCANNING"
+        WAITING_IN_SLOT = "STORAGE"
 
 class Batch:
-    """Tracks the identity and remaining quantity of a specific shipment."""
+    """Represents a unique shipment. Individual blocks will 'belong' to these IDs."""
     def __init__(self, batch_id, qty):
         self.batch_id = batch_id
         self.initial_qty = qty
@@ -26,221 +26,243 @@ class Batch:
         self.timestamp = time.strftime("%H:%M:%S")
 
 class WarehouseMap:
-    """Manages slot occupancy and translates logic to physical coordinates."""
+    """
+    TIER 2 DATA STRUCTURE: 
+    Slots are now LISTS [] instead of integers.
+    The order in the list represents physical stacking (Index 0 = Bottom, Index 1 = Top).
+    """
     def __init__(self):
-        # Physical coordinates defined by the storage rack hardware
         self.columns = [50.0, 130.0, 210.0, 290.0, 370.0]
         self.rows = [50.0, 120.0, 190.0, 260.0]
-        self.slots = {(x, y): 0 for y in self.rows for x in self.columns}
+        self.slots = {(x, y): [] for y in self.rows for x in self.columns}
 
-    def find_available_slot(self):
-        """Returns coordinates of the first slot with space (max 2 items)."""
-        for coords, qty in self.slots.items():
-            if qty < 2: return coords
+    def find_available_slot(self, exclude_coords=None):
+        """Finds a slot with capacity < 2. Used for both intake and reshuffling."""
+        for coords, items in self.slots.items():
+            if coords != exclude_coords and len(items) < 2:
+                return coords
         return None
 
-    def find_filled_slot(self):
-        """Returns coordinates of the last item added (for retrieval)."""
-        for coords, qty in reversed(list(self.slots.items())):
-            if qty > 0: return coords
-        return None
+    def find_batch_location(self, batch_id):
+        """
+        Locates a specific Batch ID within the grid.
+        Returns: (coordinates, depth) where depth 0 is bottom and 1 is top.
+        """
+        for coords, items in self.slots.items():
+            if batch_id in items:
+                return coords, items.index(batch_id) 
+        return None, None
 
     def get_visual_grid(self):
-        """Creates the text-based ASCII map for the report."""
-        # Determine header based on current mode
-        if HAS_SIMULATOR:
-            header = "--- STORAGE GRID (0,0 is Top-Right) ---"
-        else:
-            header = "--- STORAGE GRID (Logic View) ---"
-            
+        """Dynamic header based on whether the simulation hardware is connected."""
+        header = "--- STORAGE GRID (0,0 is Top-Right) ---" if HAS_SIMULATOR else "--- STORAGE GRID (Logic View) ---"
         grid_str = f"\n{header}\n"
-        
         for y in self.rows:
             row_str = "  "
             for x in reversed(self.columns):
-                qty = self.slots[(x, y)]
+                qty = len(self.slots[(x, y)])
                 icon = "[ ]" if qty == 0 else "[/]" if qty == 1 else "[X]"
                 row_str += f"{icon}  "
             grid_str += row_str + "\n"
         return grid_str
 
 class BackgroundWorker:
-    """Executes physical movement. Handles both Real Hardware and Mock logic."""
+    """Executes physical commands. Handles the hand-off between Logic and Hardware."""
     def __init__(self, simulator, lock):
         self.sim = simulator
         self.lock = lock
 
     def _sync_move(self, state):
-        """Updates hardware state and waits for animation."""
+        """Standardizes movement timing between GUI and logic."""
         if HAS_SIMULATOR:
-            with self.lock:
-                self.sim.state.conveyor_state = state
-            time.sleep(1.2) # Wait for physical movement
-        else:
-            print(f"  [Mock] Conveyor state changed to: {state}")
+            with self.lock: self.sim.state.conveyor_state = state
+            time.sleep(1.2)
+        else: print(f"  [Mock] Conveyor to: {state}")
 
-    def run_incoming(self, qty, wms_map):
-        """Moves items from Home to Storage slots."""
+    def run_incoming(self, qty, wms_map, batch_id):
+        """Executes intake trips. Limits each trip to 2 blocks (max pallet capacity)."""
         self._sync_move(ConveyorState.WAITING_AT_HOME)
-        
-        # 1. Load Pallet
         actual_loaded = 0
         for _ in range(qty): 
             if HAS_SIMULATOR:
                 with self.lock:
                     if self.sim.add_block_to_home_pallet(): actual_loaded += 1
-            else:
-                actual_loaded += 1
+            else: actual_loaded += 1
             time.sleep(0.1 if not HAS_SIMULATOR else 0.5)
 
-        # 2. Transport to Storage
         self._sync_move(ConveyorState.IMAGING)
         self._sync_move(ConveyorState.WAITING_IN_SLOT)
         
-        # 3. Store in Racks
-        stored_successfully = 0
+        # Physical transfer from pallet to storage slots
         for _ in range(actual_loaded):
             target = wms_map.find_available_slot()
             if target:
                 if HAS_SIMULATOR:
-                    tx, ty = target # Unpack coordinates
+                    tx, ty = target
                     cmd = TransferCommand(src_x=160.0, src_y=410.0, dst_x=tx, dst_y=ty)
                     with self.lock:
-                        if self.sim.transfer_item(cmd):
-                            wms_map.slots[target] += 1
-                            stored_successfully += 1
-                else:
-                    wms_map.slots[target] += 1
-                    stored_successfully += 1
+                        if self.sim.transfer_item(cmd): 
+                            wms_map.slots[target].append(batch_id) # Record ID in slot
+                else: wms_map.slots[target].append(batch_id)
                 time.sleep(0.1 if not HAS_SIMULATOR else 0.8)
         
         self._sync_move(ConveyorState.WAITING_AT_HOME)
-        return stored_successfully
 
-    def run_outgoing(self, qty, wms_map):
-        """Retrieves items from Storage slots back to Home."""
-        self._sync_move(ConveyorState.IMAGING)
-        self._sync_move(ConveyorState.WAITING_IN_SLOT)
-        
-        retrieved_successfully = 0
-        for _ in range(qty):
-            target = wms_map.find_filled_slot()
-            if target:
-                if HAS_SIMULATOR:
-                    tx, ty = target
-                    cmd = TransferCommand(src_x=tx, src_y=ty, dst_x=160.0, dst_y=410.0)
-                    with self.lock:
-                        if self.sim.transfer_item(cmd):
-                            wms_map.slots[target] -= 1
-                            retrieved_successfully += 1
-                else:
-                    wms_map.slots[target] -= 1
-                    retrieved_successfully += 1
-                time.sleep(0.1 if not HAS_SIMULATOR else 0.8)
-
-        self._sync_move(ConveyorState.WAITING_AT_HOME)
-        for _ in range(retrieved_successfully): 
-            if HAS_SIMULATOR:
-                with self.lock: self.sim.remove_block_from_home_pallet()
-            time.sleep(0.1 if not HAS_SIMULATOR else 0.5)
-            
-        return retrieved_successfully
+    def run_outgoing_at_coords(self, wms_map, target_coords):
+        """
+        TIER 2 CORE: Retrieves a SPECIFIC block from a specific coordinate.
+        Returns the ID of the block actually removed from the stack.
+        """
+        if HAS_SIMULATOR:
+            tx, ty = target_coords
+            cmd = TransferCommand(src_x=tx, src_y=ty, dst_x=160.0, dst_y=410.0)
+            with self.lock:
+                if self.sim.transfer_item(cmd):
+                    removed_id = wms_map.slots[target_coords].pop() # LIFO pop
+                    self._sync_move(ConveyorState.WAITING_AT_HOME)
+                    with self.lock: self.sim.remove_block_from_home_pallet()
+                    return removed_id
+        else:
+            removed_id = wms_map.slots[target_coords].pop()
+            print(f"  [Mock] Block {removed_id} removed from {target_coords}")
+            return removed_id
+        return None
 
 class WarehouseManager:
-    """The system controller that maintains inventory state."""
+    """The central brain. Decides WHAT needs to move and WHERE."""
     def __init__(self):
         self.lock = threading.Lock()
         self.batches = []
         self.wms_map = WarehouseMap()
-        self.is_running = True 
-        
-        if HAS_SIMULATOR:
-            # Added this line to show status when simulator is active
-            print("\n>>> System Initialized: SIMULATION MODE (Simulator Active)")
-            self.sim = BlockStorageSimulator()
-            self.app = SimulatorApp(self.sim)
-        else:
-            print("\n>>> System Initialized: LOGIC-ONLY MODE (Simulator Missing)")
-            self.sim = None
-            self.app = None
-            
+        self.is_running = True
+        self.sim = BlockStorageSimulator() if HAS_SIMULATOR else None
+        self.app = SimulatorApp(self.sim) if HAS_SIMULATOR else None
         self.worker = BackgroundWorker(self.sim, self.lock)
-
+        print(f">>> System Initialized: {'SIMULATION' if HAS_SIMULATOR else 'LOGIC'} MODE")
 
     def intake(self, qty):
-        """Logic for adding new stock."""
+        """Assigns blocks to a new Batch ID and updates the map."""
         new_batch = Batch(len(self.batches) + 1, qty)
         self.batches.append(new_batch)
-        
         remaining = qty
-        total_stored = 0
         while remaining > 0:
-            load = 2 if remaining >= 2 else 1
-            current_count = total_stored + load
-            print(f"\n[Worker] Processing {current_count} of {qty} blocks . . .")
-            
-            stored = self.worker.run_incoming(load, self.wms_map)
-            total_stored += stored
+            load = min(remaining, 2)
+            print(f"\n[Worker] Processing items for Batch {new_batch.batch_id}...")
+            self.worker.run_incoming(load, self.wms_map, new_batch.batch_id)
             remaining -= load
-        
-        print(f"\n>>> SUCCESS: {total_stored} blocks were added to storage.")
-        new_batch.current_qty = total_stored
-        new_batch.initial_qty = total_stored
+        print(f">>> SUCCESS: Batch {new_batch.batch_id} stored.")
 
     def dispatch(self, qty):
-        """Logic for removing stock."""
-        remaining_work = qty
-        total_removed = 0
-        while remaining_work > 0:
-            load = 2 if remaining_work >= 2 else 1
-            current_count = total_removed + load
-            print(f"\n[Worker] Removing {current_count} of {qty} blocks . . .")
+        """TIER 2 SMART BULK DISPATCH: Now with Partial Fulfillment reporting."""
+        
+        # 1. Check total stock on hand
+        total_available = sum(b.current_qty for b in self.batches)
+        if total_available == 0:
+            print("\n[ERROR] Dispatch failed: The warehouse is currently empty!")
+            return
+
+        # 2. Determine fulfillment status
+        requested_qty = qty
+        missing_qty = 0
+        if requested_qty > total_available:
+            missing_qty = requested_qty - total_available
+            print(f"\n[Warning] Partial Fulfillment: Only {total_available} of {requested_qty} units available.")
+            qty = total_available # Limit dispatch to actual stock
+
+        # 3. Determine the "Shopping List" based on FIFO
+        target_ids_needed = []
+        temp_batches = [Batch(b.batch_id, b.current_qty) for b in self.batches]
+        
+        rem = qty
+        for tb in temp_batches:
+            if rem <= 0: break
+            take = min(tb.current_qty, rem)
+            for _ in range(take):
+                target_ids_needed.append(tb.batch_id)
+            rem -= take
+
+        actual_removed_log = [] 
+
+        # 4. Retrieval Loop
+        while len(target_ids_needed) > 0:
+            found_easy_pick = False
             
-            removed = self.worker.run_outgoing(load, self.wms_map)
-            total_removed += removed
-            remaining_work -= load
+            for coords, items in self.wms_map.slots.items():
+                if len(items) > 0 and items[-1] in target_ids_needed:
+                    target_id = items[-1]
+                    print(f"\n[Worker] Grabbing Batch {target_id} from {coords}...")
+                    
+                    self.worker._sync_move(ConveyorState.WAITING_IN_SLOT)
+                    rid = self.worker.run_outgoing_at_coords(self.wms_map, coords)
+                    
+                    if rid:
+                        for b in self.batches:
+                            if b.batch_id == rid: b.current_qty -= 1
+                        
+                        target_ids_needed.remove(rid)
+                        actual_removed_log.append(rid)
+                        found_easy_pick = True
+                        break
+            
+            if found_easy_pick: continue
 
-        print(f"\n>>> SUCCESS: {total_removed} blocks were removed from storage.")
+            # Reshuffle logic
+            target_id = target_ids_needed[0]
+            coords, depth = self.wms_map.find_batch_location(target_id)
+            
+            if coords:
+                slot_items = self.wms_map.slots[coords]
+                top_id = slot_items[-1]
+                print(f"\n[Reshuffle] Batch {top_id} is blocking Batch {target_id}. Moving it...")
+                
+                temp_slot = self.wms_map.find_available_slot(exclude_coords=coords)
+                if temp_slot:
+                    self.worker._sync_move(ConveyorState.WAITING_IN_SLOT)
+                    if HAS_SIMULATOR:
+                        tx, ty = coords
+                        dx, dy = temp_slot
+                        cmd = TransferCommand(src_x=tx, src_y=ty, dst_x=dx, dst_y=dy)
+                        with self.lock:
+                            if self.sim.transfer_item(cmd):
+                                self.wms_map.slots[temp_slot].append(slot_items.pop())
+                    else:
+                        self.wms_map.slots[temp_slot].append(slot_items.pop())
+            else:
+                break
 
-        # Deduct from batch records (FIFO)
-        rem_to_deduct = total_removed
-        for batch in self.batches:
-            if rem_to_deduct <= 0: break
-            if batch.current_qty > 0:
-                take = min(batch.current_qty, rem_to_deduct)
-                batch.current_qty -= take
-                rem_to_deduct -= take
+        # 5. Final Detailed Reporting
+        print(f"\n>>> SUCCESS: {len(actual_removed_log)} blocks removed via FIFO.")
+        
+        unique_ids = sorted(list(set(actual_removed_log)))
+        for b_id in unique_ids:
+            count = actual_removed_log.count(b_id)
+            print(f"    - Batch {b_id}: {count} {'block' if count == 1 else 'blocks'}")
+            
+        if missing_qty > 0:
+            print(f"    !!! NOTICE: Order was short by {missing_qty} units (Stock Exhausted).")
 
 class WMS_Interface:
-    """Command Line Interface for user control."""
+    """User input loop and reporting."""
     def __init__(self, manager):
         self.manager = manager
 
     def display_report(self):
-        print("\n" + "="*50)
-        print(f"{'BATCH ID':<10} | {'TIME':<10} | {'STOCK'}")
-        print("-" * 50)
+        """Displays batch inventory and visual storage map."""
+        print("\n" + "="*50 + "\nBATCH ID | TIME     | STOCK")
         for b in self.manager.batches:
-            print(f"{b.batch_id:<10} | {b.timestamp:<10} | {b.current_qty}")
-        print(self.manager.wms_map.get_visual_grid())
-        print("="*50)
+            print(f"{b.batch_id:<8} | {b.timestamp} | {b.current_qty}")
+        print(self.manager.wms_map.get_visual_grid() + "="*50)
 
     def run(self):
+        """Primary interaction loop."""
         while self.manager.is_running:
             self.display_report()
-            print("1: Incoming | 2: Dispatch | 3: Exit")
-            try:
-                choice = input("Select: ")
-                if choice == "1":
-                    self.manager.intake(int(input("Qty to add: ")))
-                elif choice == "2":
-                    self.manager.dispatch(int(input("Qty to remove: ")))
-                elif choice == "3":
-                    self.manager.is_running = False # Signal the main thread to stop
-                    if HAS_SIMULATOR:
-                        self.manager.app.root.destroy()
-                    break
-            except Exception as e: print(f"Error: {e}")
+            choice = input("1: Incoming | 2: Dispatch | 3: Exit\nSelect: ")
+            if choice == "1": self.manager.intake(int(input("Qty: ")))
+            elif choice == "2": self.manager.dispatch(int(input("Qty: ")))
+            elif choice == "3":
+                self.manager.is_running = False
+                if HAS_SIMULATOR: self.manager.app.root.destroy()
 
 if __name__ == "__main__":
     mngr = WarehouseManager()
@@ -258,6 +280,5 @@ if __name__ == "__main__":
             time.sleep(0.5)
     
     print("\n[System] Shutdown complete. Goodbye!")
-
 
 
