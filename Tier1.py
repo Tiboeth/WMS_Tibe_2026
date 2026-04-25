@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.abspath("../block_storage_sim/src"))
 import time
 import threading
-
+# --- TIER 1 (basic version) ---
 # --- 1. HARDWARE AUTO-DETECTION ---
 # This block allows the code to run even if the simulator library is missing.
 try:
