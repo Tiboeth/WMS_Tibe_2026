@@ -1,3 +1,6 @@
+
+# --- WMS TIER 1 ---
+
 import sys
 import time
 from py_ads_client import ADSClient, ADSSymbol, BOOL, INT, LREAL
@@ -11,6 +14,7 @@ LOCAL_NET_ID = "127.0.0.1.1.2"
 # --- 2. SYMBOL DEFINITIONS ---
 # Status symbols (Read-only)
 SYM_CONVEYOR_STATE = ADSSymbol("StatusVars.ConveyorState", INT)
+SYM_LIFTER_STATE = ADSSymbol("StatusVars.LifterState", INT)
 
 # Command symbols (Write-only bits)
 CMD_SEND_PALLET     = ADSSymbol("Remote.send_pallet", BOOL)
