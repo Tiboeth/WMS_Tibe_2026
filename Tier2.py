@@ -2,9 +2,11 @@ import sys
 import os
 import time
 import threading
+sys.path.append(os.path.abspath("../block_storage_sim/src"))
+
 # --- TIRE 2 (FIFO) ---
 # --- 1. SIMULATOR IMPORT & PATHING ---
-sys.path.append(os.path.abspath("../block_storage_sim/src"))
+# This block allows the code to run even if the simulator library is missing.
 try:
     from block_storage_simulator.simulator import BlockStorageSimulator
     from block_storage_simulator.gui import SimulatorApp
@@ -13,6 +15,11 @@ try:
     HAS_SIMULATOR = True
 except ImportError:
     HAS_SIMULATOR = False
+    # Define dummy constants to prevent NameErrors in Mock Mode
+    class ConveyorState:
+        WAITING_AT_HOME = "HOME_POSITION"
+        IMAGING = "IMAGING_ZONE"
+        WAITING_IN_SLOT = "TRANSFER_ZONE"
 
 class Block:
     """Represents a physical unit with a unique global ID."""
@@ -42,6 +49,7 @@ class Batch:
         return "IN STOCK" if self.remaining > 0 else "OUT OF STOCK"
 
 class WarehouseMap:
+    """Manages slot occupancy and translates logic to physical coordinates."""
     def __init__(self):
         self.columns = [50.0, 130.0, 210.0, 290.0, 370.0]
         self.rows = [50.0, 120.0, 190.0, 260.0]
