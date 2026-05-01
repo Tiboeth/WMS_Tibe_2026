@@ -197,6 +197,12 @@ def main():
             try: mgr.dispatch(int(input(" Qty: ")))
             except: pass
         elif choice == "3":
+            # --- Added Closing Message ---
+            print("\n" + "="*50)
+            print(" SHUTTING DOWN WMS TIER 1...")
+            print(f" Final Inventory Count: {mgr.wms_map.get_total_count()} blocks.")
+            print(" ADS Connection Closed. Have a productive day!")
+            print("="*50 + "\n")
             mgr.client.close(); break
 
 if __name__ == "__main__": main()
