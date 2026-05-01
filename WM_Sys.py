@@ -1,6 +1,3 @@
-
-# --- WMS TIER 1 ---
-
 import sys
 import time
 from py_ads_client import ADSClient, ADSSymbol, BOOL, INT, LREAL
@@ -14,7 +11,6 @@ LOCAL_NET_ID = "127.0.0.1.1.2"
 # --- 2. SYMBOL DEFINITIONS ---
 # Status symbols (Read-only)
 SYM_CONVEYOR_STATE = ADSSymbol("StatusVars.ConveyorState", INT)
-SYM_LIFTER_STATE = ADSSymbol("StatusVars.LifterState", INT)
 
 # Command symbols (Write-only bits)
 CMD_SEND_PALLET     = ADSSymbol("Remote.send_pallet", BOOL)
@@ -81,69 +77,51 @@ class WarehouseManager:
             time.sleep(0.3)
 
     def intake(self, qty):
-        """Processes intake with pre-validation to prevent simulator alarms."""
+        """Moves items from Home to Storage in batches of 2."""
+        remaining = qty
+        total_stored = 0
         
-        # 1. HARDWARE READINESS CHECK
-        # Ensure the lifter isn't currently busy or in an error state
-        try:
-            lifter_status = self.client.read_symbol(SYM_LIFTER_STATE)
-            if lifter_status != 0: # Assuming 0 is the 'READY' state from your simulator
-                print(f" [ABORT] Lifter is not READY (Current State: {lifter_status}).")
-                return
-        except:
-            pass # Fallback if symbol read fails
-
-        # 2. SPACE VALIDATION (The "Alarm Preventer")
-        remaining_to_store = qty
-        planned_slots = []
-        
-        # Check if we actually have room for the entire batch before moving the pallet
-        temp_map = self.wms_map.slots.copy()
-        for _ in range(qty):
-            # Use a temporary search to find where these blocks WOULD go
-            found = False
-            for coords, height in temp_map.items():
-                if height < 2:
-                    temp_map[coords] += 1
-                    planned_slots.append(coords)
-                    found = True
-                    break
-            if not found:
-                print(f" [ABORT] Warehouse Full! Cannot find space for {qty} blocks.")
-                return
-
-        # 3. PHYSICAL EXECUTION (Only reached if validation passes)
-        self._wait_state(101, "Moving to Home Station")
-        print(f"\n [VALIDATED] Space confirmed for {qty} blocks.")
-        input(f" >>> Please add {qty} blocks and press ENTER...")
-
-        # Conveyor Sequence
-        self.client.write_symbol(CMD_SEND_PALLET, True)
-        self._wait_state(120, "At Imaging Station")
-        self.client.write_symbol(CMD_RELEASE_IMAGING, True)
-        self._wait_state(140, "At Transfer Slot")
-
-        # 4. COORDINATED TRANSFER
-        for target in planned_slots:
-            tx, ty = target
-            print(f" [LIFTER] Storing at {tx, ty} (Current stack: {self.wms_map.slots[target]})")
+        while remaining > 0:
+            trip_qty = 2 if remaining >= 2 else remaining
             
-            self.client.write_symbol(VAL_SRC_X, 160.0)
-            self.client.write_symbol(VAL_SRC_Y, 410.0)
-            self.client.write_symbol(VAL_DST_X, tx)
-            self.client.write_symbol(VAL_DST_Y, ty)
-            
-            self.client.write_symbol(CMD_TRANSFER_ITEM, True)
-            time.sleep(0.2)
-            self.client.write_symbol(CMD_TRANSFER_ITEM, False)
-            
-            # MONITOR FOR FAILURE: If state doesn't change from 0, the move likely failed
-            time.sleep(3.0) 
-            self.wms_map.slots[target] += 1
-            self.total_stock += 1
+            self._wait_state(101, "Moving to Home Station")
+            print(f"\n [TRIP] Processing {trip_qty} blocks...")
+            input(f" >>> [HANDSHAKE] Please add {trip_qty} blocks in GUI and press ENTER...")
 
-        self.client.write_symbol(CMD_RETURN_PALLET, True)
-        self.history.append(Transaction(len(self.history)+1, "Added", qty))
+            # Conveyor automation sequence
+            self.client.write_symbol(CMD_SEND_PALLET, True)
+            self._wait_state(120, "At Imaging Station")
+            self.client.write_symbol(CMD_RELEASE_IMAGING, True)
+            self._wait_state(140, "At Transfer Slot")
+            
+            # Lifter sequence (One block at a time)
+            for _ in range(trip_qty):
+                target = self.wms_map.find_available_slot()
+                if target:
+                    tx, ty = target
+                    # Move from Pallet (160, 410) to Grid Slot
+                    self.client.write_symbol(VAL_SRC_X, 160.0) 
+                    self.client.write_symbol(VAL_SRC_Y, 410.0)
+                    self.client.write_symbol(VAL_DST_X, tx)
+                    self.client.write_symbol(VAL_DST_Y, ty)
+                    
+                    # Edge-trigger the lifter
+                    self.client.write_symbol(CMD_TRANSFER_ITEM, True)
+                    time.sleep(0.2)
+                    self.client.write_symbol(CMD_TRANSFER_ITEM, False)
+                    time.sleep(3) # Wait for animation
+                    
+                    self.wms_map.slots[target] += 1
+                    self.total_stock += 1
+                    total_stored += 1
+
+            # Return empty pallet for next batch
+            self.client.write_symbol(CMD_RETURN_PALLET, True)
+            remaining -= trip_qty
+            
+        self._wait_state(101, "All batches complete")
+        self.history.append(Transaction(len(self.history)+1, "Added", total_stored))
+
     def dispatch(self, qty):
         """Retrieves items from Storage to Home in batches of 2."""
         if self.total_stock < qty:
@@ -214,6 +192,13 @@ def main():
                 mgr.dispatch(q)
             except ValueError: print("Please enter a numeric quantity.")
         elif choice == "3":
+            # --- Added Closing Message ---
+            print("\n" + "="*50)
+            print(" SHUTTING DOWN WMS TIER 1...")
+            print(f" Final Inventory Count: {mgr.total_stock} blocks.")
+            print(" ADS Connection Closed. Have a productive day!")
+            print("="*50 + "\n")
+
             mgr.client.close()
             break
 
