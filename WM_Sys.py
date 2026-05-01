@@ -1,5 +1,5 @@
 # ==============================================================================
-# WMS TIER 2 - WAREHOUSE MANAGEMENT SYSTEM (FIFO)
+# WMS TIER 3 - WAREHOUSE MANAGEMENT SYSTEM (Individual item tracking)
 # ==============================================================================
 import sys
 import time
@@ -33,6 +33,7 @@ class Block:
         self.id = block_id           # Example: "#1"
         self.timestamp = timestamp   # Shared Batch Time
         self.sequence_num = sequence_num # Numeric value for sorting
+        self.status = "In Stock"  # New blocks start as "In Stock"
 class Transaction:
     def __init__(self, order_num, action, qty):
         self.order_num, self.time, self.status = order_num, time.strftime("%H:%M:%S"), f"{action} {qty} block(s)"
@@ -54,11 +55,12 @@ class WarehouseManager:
         self.client = ADSClient(local_ams_net_id=LOCAL_NET_ID)
         self.MAX_CAPACITY = 39 
         self.next_seq = 1
-
+        self.all_blocks = []  # Master list for reporting every block ID
+        self.wms_map = WarehouseMap()
         # Attempt to establish ADS connection
         try:
             self.client.open(target_ip=PLC_IP, target_ams_net_id=PLC_NET_ID, target_ams_port=PLC_PORT)
-            print(f">>> WM System TIER 2 V2.0")
+            print(f">>> WM System TIER 3 V3.0")
             print(f">>> ADS CONNECTED to {PLC_IP}")
         except Exception:
             print("\n" + "!"*50 + "\n ERROR: SIMULATOR IS NOT CONNECTED.\n" + "!"*50)
@@ -97,6 +99,8 @@ class WarehouseManager:
 
 
     def intake(self, qty):
+        self.all_blocks = []  
+        
         if self.wms_map.get_total_count() + qty > self.MAX_CAPACITY:
             print(" [ABORT] Full!"); return
 
@@ -133,13 +137,15 @@ class WarehouseManager:
                     # Create Block: ID matches the sequence number (#1, #2, etc.)
                     new_block = Block(f"#{seq_val}", batch_time, seq_val)
                     self.wms_map.slots[target].append(new_block)
-                    
+                    self.all_blocks.append(new_block)
+
                     print(f" [STORED] ID: #{seq_val} | Batch: {time.strftime('%H:%M:%S', time.localtime(batch_time))}")
                     
             self.client.write_symbol(CMD_RETURN_PALLET, True)
             remaining -= trip
 
         self.history.append(Transaction(len(self.history)+1, "Added", qty))
+        self.all_blocks.append(new_block) # Add to master report list
 
 
 
@@ -192,14 +198,26 @@ class WarehouseManager:
             remaining -= trip
             
         self.history.append(Transaction(len(self.history)+1, "Removed", qty))
+        oldest_block.status = "Dispatched" # Update status to "Dispatched"
 
 # --- 5. MAIN INTERFACE ---
 def main():
     mgr = WarehouseManager()
     while True:
-        print("\n" + "="*50 + f"\n ORDER # | TIME | STATUS\n" + "-"*50)
-        for t in mgr.history: print(f" {t.order_num:<7} | {t.time:<8} | {t.status}")
-        print(f"-"*50 + f"\n TOTAL STOCK: {mgr.wms_map.get_total_count()}\n" + "="*50)
+        # --- TIER 3 DETAILED REPORTING ---
+        print("\n" + "="*60)
+        print(f"{'BLOCK ID':<10} | {'TIMESTAMP':<10} | {'STATUS':<12}")
+        print("-"*60)
+        
+        # Display the status of every block ever registered
+        for b in mgr.all_blocks:
+            readable_time = time.strftime('%H:%M:%S', time.localtime(b.timestamp))
+            print(f"{b.id:<10} | {readable_time:<10} | {b.status:<12}")
+        
+        # Display Total Live Count
+        print("-"*60)
+        print(f"TOTAL BLOCKS CURRENTLY IN STOCK: {mgr.wms_map.get_total_count()}")
+        print("="*60)
         choice = input("\n 1: Add | 2: Remove | 3: Exit\n Command > ")
         
         if choice == "1":
