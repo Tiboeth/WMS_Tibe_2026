@@ -170,15 +170,18 @@ class WarehouseManager:
 
         self.history.append(Transaction(len(self.history)+1, "Removed", total_removed))
 
+# --- 5. MAIN INTERFACE ---
+
 def main():
     mgr = WarehouseManager()
     while True:
-        # UI Rendering
+        # UI Header and Log
         print("\n" + "="*50 + f"\n ORDER # | TIME     | STATUS\n" + "-"*50)
         for t in mgr.history:
             print(f" {t.order_num:<7} | {t.time:<8} | {t.status}")
         print(f"-"*50 + f"\n TOTAL BLOCKS IN STORAGE: {mgr.total_stock}\n" + "="*50)
         
+        # Menu options
         print("\n 1: Add | 2: Remove | 3: Exit")
         choice = input(" Command > ")
         if choice == "1":
