@@ -6,21 +6,27 @@ import time
 import uuid
 from py_ads_client import ADSClient, ADSSymbol, BOOL, INT, LREAL
 
-# ==============================================================================
-# PLC CONFIGURATION
-# ==============================================================================
-PLC_IP, PLC_NET_ID, PLC_PORT, LOCAL_NET_ID = "127.0.0.1", "127.0.0.1.1.1", 48898, "127.0.0.1.1.2"
-
+# --- 1. ADS CONNECTION CONFIGURATION ---
+PLC_IP = "127.0.0.1" 
+PLC_NET_ID = "127.0.0.1.1.1"
+PLC_PORT = 48898
+LOCAL_NET_ID = "127.0.0.1.1.2"
+# --- 2. SYMBOL DEFINITIONS ---
+# Status symbols (Read-only)
 SYM_CONVEYOR_STATE = ADSSymbol("StatusVars.ConveyorState", INT)
+
+# Command symbols (Write-only bits)
 CMD_SEND_PALLET = ADSSymbol("Remote.send_pallet", BOOL)
 CMD_RELEASE_IMAGING = ADSSymbol("Remote.release_from_imaging", BOOL)
 CMD_RETURN_PALLET = ADSSymbol("Remote.return_pallet", BOOL)
 CMD_TRANSFER_ITEM = ADSSymbol("Remote.transfer_item", BOOL)
-VAL_SRC_X, VAL_SRC_Y, VAL_DST_X, VAL_DST_Y = ADSSymbol("Remote.src_x", LREAL), ADSSymbol("Remote.src_y", LREAL), ADSSymbol("Remote.dst_x", LREAL), ADSSymbol("Remote.dst_y", LREAL)
 
-# ==============================================================================
-# DATA MODELS
-# ==============================================================================
+# Coordinate symbols (LREAL for precise decimal movement)
+VAL_SRC_X = ADSSymbol("Remote.src_x", LREAL)
+VAL_SRC_Y = ADSSymbol("Remote.src_y", LREAL)
+VAL_DST_X = ADSSymbol("Remote.dst_x", LREAL)
+VAL_DST_Y = ADSSymbol("Remote.dst_y", LREAL)
+
 class Block:
     """Unique ID and Timestamp are fixed upon intake and never change."""
     def __init__(self, block_id, timestamp, sequence_num):
@@ -31,6 +37,7 @@ class Transaction:
     def __init__(self, order_num, action, qty):
         self.order_num, self.time, self.status = order_num, time.strftime("%H:%M:%S"), f"{action} {qty} block(s)"
 
+# --- 3. WAREHOUSE MAP LOGIC ---
 class WarehouseMap:
     def __init__(self):
         self.columns, self.rows = [50.0, 130.0, 210.0, 290.0, 370.0], [50.0, 120.0, 190.0, 260.0]
@@ -39,18 +46,23 @@ class WarehouseMap:
     def get_total_count(self):
         return sum(len(s) for s in self.slots.values())
 
-# ==============================================================================
-# SYSTEM MANAGER
-# ==============================================================================
+# --- 4. CORE MANAGEMENT LOGIC ---
+
 class WarehouseManager:
     def __init__(self):
         self.history, self.wms_map = [], WarehouseMap()
         self.client = ADSClient(local_ams_net_id=LOCAL_NET_ID)
         self.MAX_CAPACITY = 39 
         self.next_seq = 1
+
+        # Attempt to establish ADS connection
         try:
             self.client.open(target_ip=PLC_IP, target_ams_net_id=PLC_NET_ID, target_ams_port=PLC_PORT)
-        except: sys.exit(1)
+            print(f">>> WM System TIER 2 V2.0")
+            print(f">>> ADS CONNECTED to {PLC_IP}")
+        except Exception:
+            print("\n" + "!"*50 + "\n ERROR: SIMULATOR IS NOT CONNECTED.\n" + "!"*50)
+            sys.exit(1)
 
     def _wait_state(self, target, label):
         while True:
@@ -181,8 +193,7 @@ class WarehouseManager:
             
         self.history.append(Transaction(len(self.history)+1, "Removed", qty))
 
-# INTERFACE
-# ==============================================================================
+# --- 5. MAIN INTERFACE ---
 def main():
     mgr = WarehouseManager()
     while True:
@@ -190,16 +201,19 @@ def main():
         for t in mgr.history: print(f" {t.order_num:<7} | {t.time:<8} | {t.status}")
         print(f"-"*50 + f"\n TOTAL STOCK: {mgr.wms_map.get_total_count()}\n" + "="*50)
         choice = input("\n 1: Add | 2: Remove | 3: Exit\n Command > ")
+        
         if choice == "1":
             try: mgr.intake(int(input(" Qty: ")))
-            except: pass
+            except: ValueError: print("Please enter a numeric quantity.")
+       
         elif choice == "2":
             try: mgr.dispatch(int(input(" Qty: ")))
-            except: pass
+            except: ValueError: print("Please enter a numeric quantity.")
+        
         elif choice == "3":
             # --- Added Closing Message ---
             print("\n" + "="*50)
-            print(" SHUTTING DOWN WMS TIER 1...")
+            print(" SHUTTING DOWN WMS TIER 2...")
             print(f" Final Inventory Count: {mgr.wms_map.get_total_count()} blocks.")
             print(" ADS Connection Closed. Have a productive day!")
             print("="*50 + "\n")
