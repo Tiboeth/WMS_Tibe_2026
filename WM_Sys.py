@@ -147,58 +147,83 @@ class WarehouseManager:
         
 
 
-    def dispatch(self, qty):
-        """Dispatch: Uses Batch Timestamp + Sequence Number to find the oldest block."""
+    def dispatch(self, qty, target_id=None):
+        """Tier 3: Dispatch by ID or FIFO with restored Imaging path."""
         if self.wms_map.get_total_count() < qty:
-            print(" [ABORT] Low Stock."); return
+            print(" [ABORT] Insufficient stock."); return
 
         remaining = qty
         while remaining > 0:
             trip = 2 if remaining >= 2 else remaining
+            
+            # --- FIXED PHYSICAL PATH ---
             self.client.write_symbol(CMD_SEND_PALLET, True)
-            self._wait_state(120, "Imaging")
+            
+            # 1. Must wait and release at Imaging (State 120)
+            self._wait_state(120, "At Imaging Station")
             self.client.write_symbol(CMD_RELEASE_IMAGING, True)
-            self._wait_state(140, "Transfer")
+            time.sleep(0.2)
+            self.client.write_symbol(CMD_RELEASE_IMAGING, False) # Pulse it!
+            
+            # 2. Now wait for Transfer (State 140)
+            self._wait_state(140, "At Transfer Slot")
 
             for _ in range(trip):
-                
-                # --- 1. SCAN FOR THE ABSOLUTE OLDEST (Timestamp then SMALLEST ID) ---
+                # (Existing Scan, Shuffle, and Retrieval Logic...)
                 oldest_block, target_coords, target_index = None, None, None
 
-                for coords, stack in self.wms_map.slots.items():
-                    for idx, block in enumerate(stack):
-                        if oldest_block is None:
-                            oldest_block, target_coords, target_index = block, coords, idx
-                        else:
-                            # Rule 1: Check Batch Timestamp
-                            if block.timestamp < oldest_block.timestamp:
+                if target_id:
+                    for coords, stack in self.wms_map.slots.items():
+                        for idx, block in enumerate(stack):
+                            if block.id == target_id:
                                 oldest_block, target_coords, target_index = block, coords, idx
-                            
-                            # Rule 2: TIE-BREAKER (If timestamps are equal, SMALLEST ID is oldest)
+                                break
+                    if not oldest_block:
+                        print(f" [ERROR] ID {target_id} not found.")
+                        target_id = None
+                
+                if not oldest_block:
+                    for coords, stack in self.wms_map.slots.items():
+                        for idx, block in enumerate(stack):
+                            if oldest_block is None or block.timestamp < oldest_block.timestamp:
+                                oldest_block, target_coords, target_index = block, coords, idx
                             elif block.timestamp == oldest_block.timestamp:
-                                if block.sequence_num < oldest_block.sequence_num: # < for smaller ID priority
+                                if block.sequence_num < oldest_block.sequence_num:
                                     oldest_block, target_coords, target_index = block, coords, idx
 
-
-
-                # 2. NECESSARY SHUFFLE CHECK
+                # 2. SHUFFLE CHECK
                 if target_index == 0 and len(self.wms_map.slots[target_coords]) == 2:
                     self._execute_shuffle(target_coords)
 
-                # 3. RETRIEVE TARGET
+                # --- 3. RETRIEVE TARGET ---
                 tx, ty = target_coords
                 self._move_lifter(tx, ty, 160.0, 410.0)
-                self.wms_map.slots[target_coords].pop()
-
-                oldest_block.status = "Dispatched" # Update status to "Dispatched"
                 
+                # Update physical tracking
+                self.wms_map.slots[target_coords].pop()
+                
+                # FIX 1: UPDATE THE STATUS FOR REPORTING
+                oldest_block.status = "Dispatched"
+                
+                # Clear target_id after the first find so the second block in a batch is FIFO
+                target_id = None 
+
+            # --- 4. FINISH TRIP & USER CONFIRMATION ---
             self.client.write_symbol(CMD_RETURN_PALLET, True)
-            self._wait_state(101, "Home")
-            input(f" >>> Batch of {trip} ready. Unload and press ENTER...")
-            remaining -= trip
             
+            # Wait for pallet to arrive at home
+            self._wait_state(101, "Ready to Unload")
+            
+            # FIX 2: ADD USER CONFIRMATION BEFORE FINISHING
+            print(f"\n [SUCCESS] Batch of {trip} delivered to Home.")
+            input(" >>> Please unload the pallet and press ENTER to continue...")
+            
+            remaining -= trip
+
+        # Add history entry after the loop finishes
         self.history.append(Transaction(len(self.history)+1, "Removed", qty))
-        
+
+
 
 # --- 5. MAIN INTERFACE ---
 def main():
@@ -236,12 +261,18 @@ def main():
                 print(" [ERROR] Please enter a valid number.")
                 
         elif choice == "2":
-            try:
-                qty = int(input(" Quantity to Remove: "))
-                mgr.dispatch(qty)
-            except ValueError:
-                print(" [ERROR] Please enter a valid number.")
-                
+            print("\n 1: Random (FIFO) | 2: By Specific ID")
+            mode = input(" Mode > ")
+            
+            if mode == "2":
+                target = input(" Enter ID (e.g., #1): ")
+                mgr.dispatch(1, target_id=target) # Dispatches 1 specific block
+            else:
+                try:
+                    qty = int(input(" Quantity: "))
+                    mgr.dispatch(qty)
+                except: pass
+
         elif choice == "3":
             print("\n" + "="*60)
             print(" SHUTTING DOWN WMS TIER 3...")
