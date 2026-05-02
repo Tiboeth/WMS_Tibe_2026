@@ -99,8 +99,7 @@ class WarehouseManager:
 
 
     def intake(self, qty):
-        self.all_blocks = []  
-        
+              
         if self.wms_map.get_total_count() + qty > self.MAX_CAPACITY:
             print(" [ABORT] Full!"); return
 
@@ -145,8 +144,7 @@ class WarehouseManager:
             remaining -= trip
 
         self.history.append(Transaction(len(self.history)+1, "Added", qty))
-        self.all_blocks.append(new_block) # Add to master report list
-
+        
 
 
     def dispatch(self, qty):
@@ -192,49 +190,68 @@ class WarehouseManager:
                 self._move_lifter(tx, ty, 160.0, 410.0)
                 self.wms_map.slots[target_coords].pop()
 
+                oldest_block.status = "Dispatched" # Update status to "Dispatched"
+                
             self.client.write_symbol(CMD_RETURN_PALLET, True)
             self._wait_state(101, "Home")
             input(f" >>> Batch of {trip} ready. Unload and press ENTER...")
             remaining -= trip
             
         self.history.append(Transaction(len(self.history)+1, "Removed", qty))
-        oldest_block.status = "Dispatched" # Update status to "Dispatched"
+        
 
 # --- 5. MAIN INTERFACE ---
 def main():
+    """Main interface for Tier 3: Handles reporting, sorting, and user commands."""
     mgr = WarehouseManager()
+    
     while True:
-        # --- TIER 3 DETAILED REPORTING ---
-        print("\n" + "="*60)
-        print(f"{'BLOCK ID':<10} | {'TIMESTAMP':<10} | {'STATUS':<12}")
-        print("-"*60)
+        # --- TIER 3 REPORTING: NUMERICALLY SORTED TABLE ---
+        # Headers aligned to 20-character widths for readability
+        print("\n" + "BLOCK ID".ljust(20) + "TIMESTAMP".ljust(20) + "STATUS")
+        print("-" * 60)
         
-        # Display the status of every block ever registered
-        for b in mgr.all_blocks:
+        # We sort the master list by sequence_num so #1 always appears before #2
+        # This keeps the report consistent even if timestamps are identical
+        sorted_report = sorted(mgr.all_blocks, key=lambda b: b.sequence_num)
+        
+        for b in sorted_report:
             readable_time = time.strftime('%H:%M:%S', time.localtime(b.timestamp))
-            print(f"{b.id:<10} | {readable_time:<10} | {b.status:<12}")
+            print(f"{b.id.ljust(20)}{readable_time.ljust(20)}{b.status}")
         
-        # Display Total Live Count
-        print("-"*60)
+        # --- LIVE INVENTORY STATUS ---
+        print("-" * 60)
         print(f"TOTAL BLOCKS CURRENTLY IN STOCK: {mgr.wms_map.get_total_count()}")
-        print("="*60)
-        choice = input("\n 1: Add | 2: Remove | 3: Exit\n Command > ")
+        print("-" * 60)
+
+        # --- USER MENU ---
+        print("\n 1: Add Blocks | 2: Remove Blocks | 3: Exit")
+        choice = input(" Command > ")
         
         if choice == "1":
-            try: mgr.intake(int(input(" Qty: ")))
-            except: ValueError: print("Please enter a numeric quantity.")
-       
+            try:
+                qty = int(input(" Quantity to Add: "))
+                mgr.intake(qty)
+            except ValueError:
+                print(" [ERROR] Please enter a valid number.")
+                
         elif choice == "2":
-            try: mgr.dispatch(int(input(" Qty: ")))
-            except: ValueError: print("Please enter a numeric quantity.")
-        
+            try:
+                qty = int(input(" Quantity to Remove: "))
+                mgr.dispatch(qty)
+            except ValueError:
+                print(" [ERROR] Please enter a valid number.")
+                
         elif choice == "3":
-            # --- Added Closing Message ---
-            print("\n" + "="*50)
-            print(" SHUTTING DOWN WMS TIER 2...")
+            print("\n" + "="*60)
+            print(" SHUTTING DOWN WMS TIER 3...")
             print(f" Final Inventory Count: {mgr.wms_map.get_total_count()} blocks.")
             print(" ADS Connection Closed. Have a productive day!")
-            print("="*50 + "\n")
-            mgr.client.close(); break
+            print("="*60 + "\n")
+            
+            mgr.client.close()
+            break
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
+
