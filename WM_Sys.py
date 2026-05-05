@@ -266,7 +266,12 @@ def main():
             
             if mode == "2":
                 target = input(" Enter ID (e.g., #1): ")
-                mgr.dispatch(1, target_id=target) # Dispatches 1 specific block
+                                    # Check if any block in the list matches the target ID
+                if any(b.id == target for b in mgr.all_blocks):
+                    mgr.dispatch(1, target_id=target) # Dispatches 1 specific block
+                else:
+                    print(f" [ERROR] Block {target} not found in inventory.")
+              
             else:
                 try:
                     qty = int(input(" Quantity: "))
@@ -285,4 +290,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
