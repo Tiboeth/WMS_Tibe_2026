@@ -271,7 +271,7 @@ def main():
                     mgr.dispatch(1, target_id=target) # Dispatches 1 specific block
                 else:
                     print(f" [ERROR] Block {target} not found in inventory.")
-              
+                continue  # This jumps back to the start of the 'while' loop
             else:
                 try:
                     qty = int(input(" Quantity: "))
